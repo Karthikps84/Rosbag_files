@@ -7,7 +7,6 @@ from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from cv_bridge import CvBridge
-from plyer import notification
 import pyrealsense2 as rs2
 import argparse
 from mmdet.apis import init_detector, inference_detector
@@ -26,8 +25,8 @@ class DetectionProcessor:
         os.makedirs(output_dir, exist_ok=True)
 
         # Initialize the mmdetection model
-        self.model_cfg = '../mmdetection/configs/rtmdet/rtmdet-ins_s_8xb32-300e_coco.py'  # Configuration file for the model
-        self.checkpoint = '/home/palyakere/heron/python-files/Checkpoints/rtmdet-ins_s_8xb32-300e_coco_20221121_212604-fdc5d7ec.pth'
+        self.model_cfg = '../rtmdet-ins_s_8xb32-300e_coco.py'  # Configuration file for the model
+        self.checkpoint = '../rtmdet-ins_s_8xb32-300e_coco_20221121_212604-fdc5d7ec.pth'
         self.model = init_detector(self.model_cfg, self.checkpoint, device='cuda:0') 
 
         self.class_names = ["obstacle"]  # List of class names
