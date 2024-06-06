@@ -7,6 +7,7 @@ from rosbags.highlevel import AnyReader
 from rosbags.image import message_to_cvimage
 from deep_sort_realtime.deepsort_tracker import DeepSort
 from cv_bridge import CvBridge
+from plyer import notification
 import pyrealsense2 as rs2
 import argparse
 from mmdet.apis import init_detector, inference_detector
@@ -21,12 +22,12 @@ class DetectionProcessor:
         self.camera_index = camera_index
 
         # Create a directory to save images
-        output_dir = 'output_images'
+        self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
 
         # Initialize the mmdetection model
-        self.model_cfg = '../rtmdet-ins_s_8xb32-300e_coco.py'  # Configuration file for the model
-        self.checkpoint = '../rtmdet-ins_s_8xb32-300e_coco_20221121_212604-fdc5d7ec.pth'
+        self.model_cfg = 'rtmdet/rtmdet-ins_m_8xb32-300e_coco.py'  # Configuration file for the model
+        self.checkpoint = 'rtmdet-ins_m_8xb32-300e_coco_20221123_001039-6eba602e.pth'
         self.model = init_detector(self.model_cfg, self.checkpoint, device='cuda:0') 
 
         self.class_names = ["obstacle"]  # List of class names
@@ -70,27 +71,22 @@ class DetectionProcessor:
             color_connection_images = reader.messages(connections=color_connections)
             depth_connection_images = reader.messages(connections=depth_connections)
             
-            #print(len(color_connection_images))
-            
         
-            for color_image, depth_image in zip(color_connection_images, depth_connection_images):
+            for i, (color_image, depth_image) in enumerate(zip(color_connection_images, depth_connection_images)):
 
                 img_msg = reader.deserialize(color_image[2], color_image[0].msgtype)
                 color_image = message_to_cvimage(img_msg, 'bgr8')
-                color_timestamp = img_msg.header.stamp.sec
 
                 depth_msg = reader.deserialize(depth_image[2], depth_image[0].msgtype)
                 depth_image = self.bridge.imgmsg_to_cv2(depth_msg, depth_msg.encoding)
-                depth_timestamp = depth_msg.header.stamp.sec 
-                
-                #print('color , depth --timestamps', color_timestamp, depth_timestamp)
 
                 with torch.no_grad():
                     result = inference_detector(self.model, color_image)
-                #print(result)
+                    
                 segm_info = result.pred_instances.masks
                 bbox_info = result.pred_instances.bboxes.tolist()
                 scores = result.pred_instances.scores.tolist()
+                
                 detect = []
                 for segm, bbox, score in zip(segm_info, bbox_info, scores):
                     
@@ -100,8 +96,7 @@ class DetectionProcessor:
                         detect.append([[x1, y1, x2 - x1, y2 - y1], score, class_id])
                                     
                 tracks = self.tracker.update_tracks(detect, frame=color_image)
-                distance_threshold = 100
-                min_distance = float('inf')
+                distance_threshold = 500
                 min_x, min_y = None, None  
                             
                 for track in tracks:
@@ -111,13 +106,15 @@ class DetectionProcessor:
                     ltrb = track.to_ltrb()
                     class_id = track.get_det_class()
                     x1, y1, x2, y2 = map(int, ltrb)
-                        
+
                     # Find minimum distance within the segmented region
                     mask = segm_info[class_id][y1:y2, x1:x2]
-                    segm_coords = np.where(mask.cpu().numpy())
+                    segm_coords = np.where(mask.cpu().numpy()) #array format
+                    min_distance = float('inf')
+
                     
                     if segm_coords[0].size > 0 and segm_coords[1].size > 0:
-                        for y, x in zip(segm_coords[0], segm_coords[1]):
+                        for y, x in zip(segm_coords[0] + y1, segm_coords[1] + x1):
                             depth_value = depth_image[y, x]
                             distance = depth_value
                             if distance != 0 and distance < min_distance:
@@ -125,6 +122,16 @@ class DetectionProcessor:
                                 min_x, min_y = x, y
                                 
                         if min_distance / 10 <= distance_threshold:
+                                mask = mask.cpu().numpy().astype(np.uint8)
+                                mask = mask * 255  # Convert boolean to uint8
+
+                                # Create a colored mask image
+                                colored_mask = np.zeros_like(color_image, dtype=np.uint8)
+                                colored_mask[y1:y2, x1:x2][mask == 255] = [0, 255, 0]  # Set the mask pixels to green color
+
+                                # Overlay the colored mask on the original image
+                                alpha = 0.5  # Adjust the transparency value (0 to 1)
+                                cv2.addWeighted(color_image, 1 - alpha, colored_mask, alpha, 0, color_image)
                                 color = self.colors[class_id]
                                 B, G, R = map(int, color)
                                 text = f"{track_id} - {self.class_names[class_id]}"
@@ -136,15 +143,15 @@ class DetectionProcessor:
                                 cv2.circle(color_image, (min_x, min_y), 1, (0, 0, 255), 2)
                                 cv2.putText(color_image, object_dist, (int(x), int(y)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
 
-                cv2.imshow("Object tracking", color_image)
-                cv2.waitKey(1)
+                output_path = os.path.join(self.output_dir, f'image_{i:04d}.png')
+                cv2.imwrite(output_path, color_image)
                 
     def run(self):
             self.process_images()
 
 # Usage
-image_bag_file_path = '/home/palyakere/heron/Environment_rosbags-2024/environment_colaboration_1'
-output_dir = '/home/palyakere/heron/Environment_rosbags-2024/Outputs'
+image_bag_file_path = '../files/environment_lots_of_humans_1'
+output_dir = 'Outputs'
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--camera', type=int, required=True, help='Index of the camera to process (0, 1, 2, or 3)')
